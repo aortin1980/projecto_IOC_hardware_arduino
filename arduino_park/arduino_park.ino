@@ -1,26 +1,35 @@
+#include <ArduinoJson.h>
+#include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
+#include <WiFiUdp.h>
+#include <NTPClient.h>
+
 // Definición de pines
 const int trigPin = D5;  // Pin Trig del HC-SR04
 const int echoPin = D6;  // Pin Echo del HC-SR04
 const int ledVerde = D1; // LED Verde
 const int ledAmarillo = D2; // LED Amarillo
 const int ledRojo = D3; // LED Rojo
-
 // Variables para la conexión Wi-Fi
-#include <ESP8266WiFi.h>
-#include <ESP8266HTTPClient.h>
-
-const char* ssid = "WIFI_Mob";        // Tu SSID
-const char* password = "3nmicasano3ntras"; // Tu contraseña
+const char* ssid = "WIFI_SEC";        // Tu SSID
+const char* password = "3nmicasano3ntras";         // Tu contraseña
 
 // URL de la API
-const String url = "http://TU_API_SERVER/api/parking/use"; // Cambia TU_API_SERVER por la dirección de tu servidor
-const String plaza = "1";  // Cambia esto por el número de plaza que quieras enviar
-
+const String url = "http://192.168.1.181:8080/api/parkings/status"; // Endpoint del servidor
+const String plaza = "1";  // Número de plaza de estacionamiento
+String HoraEntrada;
 // Variable de distancia mínima para activar el LED rojo (en cm)
 const int distanciaMinima = 100;
 
-// Variable para controlar si ya se hizo la petición
+// Variables para controlar si ya se hicieron las peticiones
 bool apiEnviada = false;
+bool apiSalidaEnviada = false;
+
+
+
+// Cliente NTP para obtener la hora actual
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 0, 60000);  // Zona horaria UTC (puedes ajustar el offset en segundos)
 
 void setup() {
   // Inicializar comunicación serial
@@ -38,15 +47,17 @@ void setup() {
 
   // Intentar conectar a la red Wi-Fi
   conectarWiFi();
+
+  // Iniciar cliente NTP
+  timeClient.begin();
 }
 
 void loop() {
   // Verificar conexión a Wi-Fi
   if (WiFi.status() != WL_CONNECTED) {
-    // Si no hay conexión a internet, encender el LED amarillo
-    digitalWrite(ledAmarillo, HIGH);
+    digitalWrite(ledAmarillo, HIGH);  // Encender LED amarillo si no hay WiFi
   } else {
-    digitalWrite(ledAmarillo, LOW);
+    digitalWrite(ledAmarillo, LOW);  // Apagar LED amarillo si hay WiFi
   }
 
   // Leer distancia desde el sensor HC-SR04
@@ -66,25 +77,31 @@ void loop() {
   // Calcular la distancia en centímetros
   distancia = duracion * 0.034 / 2;
   
-Serial.println("Distancia:"+distancia);
-Serial.println("DistanciaMinima:"+distanciaMinima);
+  Serial.println("Distancia: " + String(distancia));
 
-  // Control de LEDs según la distancia detectada
+  // Control de LEDs y lógica según la distancia detectada
   if (distancia < distanciaMinima) {
-    // Si se detecta algo dentro del umbral, encender el LED rojo
+    // Si se detecta algo dentro del umbral, encender el LED rojo (espacio ocupado)
     digitalWrite(ledRojo, HIGH);
     digitalWrite(ledVerde, LOW);
 
-    // Hacer llamada API si no se ha hecho aún
+    // Hacer llamada API para indicar espacio ocupado si no se ha hecho aún
     if (!apiEnviada && WiFi.status() == WL_CONNECTED) {
-      enviarApi();
-      apiEnviada = true;  // Marcar que ya se envió la API para no repetirlo
+      enviarApiEspacioOcupado();
+      apiEnviada = true;   // Marcar que ya se envió la API para el espacio ocupado
+      apiSalidaEnviada = false; // Resetear para la próxima salida
     }
   } else {
-    // Si no se detecta nada, encender el LED verde y reiniciar el estado de la API
+    // Si no se detecta nada, encender el LED verde (espacio libre) y actualizar el historial
     digitalWrite(ledRojo, LOW);
     digitalWrite(ledVerde, HIGH);
-    apiEnviada = false;  // Resetear el estado para la próxima detección
+
+    // Hacer llamada API para indicar que el espacio está libre si no se ha hecho aún
+    if (!apiSalidaEnviada && WiFi.status() == WL_CONNECTED) {
+      enviarApiEspacioLibre();
+      apiSalidaEnviada = true;  // Marcar que ya se envió la API para la salida
+      apiEnviada = false;   // Resetear para la próxima entrada
+    }
   }
 
   // Pausa antes de la siguiente medición
@@ -130,32 +147,47 @@ void testLeds() {
   digitalWrite(ledRojo, HIGH);
   delay(500);
   digitalWrite(ledRojo, LOW);
-  
-  // Ciclar hasta que haya conexión Wi-Fi
-  while (WiFi.status() != WL_CONNECTED) {
-      conectarWiFi();
-    digitalWrite(ledVerde, HIGH);
-    delay(200);
-    digitalWrite(ledVerde, LOW);
-    digitalWrite(ledAmarillo, HIGH);
-    delay(200);
-    digitalWrite(ledAmarillo, LOW);
-    digitalWrite(ledRojo, HIGH);
-    delay(200);
-    digitalWrite(ledRojo, LOW);
-  }
 }
 
-void enviarApi() {
+// Función para enviar API cuando el espacio está ocupado
+void enviarApiEspacioOcupado() {
   if (WiFi.status() == WL_CONNECTED) {
     WiFiClient client;  // Crear objeto WiFiClient
     HTTPClient http;
 
-    String fullUrl = url + plaza;
+    String fullUrl = url;  // La URL del servidor
     http.begin(client, fullUrl);  // Iniciar conexión con WiFiClient y la URL
 
+    // Crear un objeto JSON
+    StaticJsonDocument<256> doc; // Cambia el tamaño si es necesario
+    doc["parkingSpaces"]["space_id"] = 1;
+    doc["parkingSpaces"]["lot_id"] = 1;
+    doc["parkingSpaces"]["space_number"] = 1;
+    doc["parkingSpaces"]["is_reserved"] = false;  // Cambiar a booleano
+    doc["parkingSpaces"]["is_occupied"] = true;   // Cambiar a booleano
+    doc["parkingHistory"]["client_id"] = 4;
+    doc["parkingHistory"]["lot_id"] = 1;
+
+
+    // Formato de fecha y hora
+    String entryDate = getDate(); // Ajusta según sea necesario
+    String entryTime = getTime(); // Devuelve "HH:mm:ss"
+    HoraEntrada = entryDate + " " + entryTime;
+    doc["parkingHistory"]["entry_time"] = HoraEntrada; // Añadir la entrada en el formato correcto
+
+    // Asegúrate de que exit_time esté en el formato correcto o sea null
+    doc["parkingHistory"]["exit_time"] = nullptr; // o reemplaza con exitTime en formato correcto si se necesita
+
+    doc["parkingHistory"]["total_cost"] = 0;
+
+    // Serializar el objeto JSON a String
+    String jsonPayload;
+    serializeJson(doc, jsonPayload);
+
+    Serial.println("Payload: " + jsonPayload);  // Imprimir el payload
+    
     http.addHeader("Content-Type", "application/json");  // Definir el header
-    int httpResponseCode = http.POST("{}");  // Enviar petición POST con un body vacío
+    int httpResponseCode = http.POST(jsonPayload);  // Enviar la solicitud POST con el JSON
 
     if (httpResponseCode > 0) {
       String response = http.getString();  // Obtener respuesta
@@ -169,4 +201,69 @@ void enviarApi() {
   } else {
     Serial.println("No conectado a WiFi, no se puede enviar la solicitud");
   }
+}
+
+// Función para enviar API cuando el espacio está libre
+void enviarApiEspacioLibre() {
+  if (WiFi.status() == WL_CONNECTED) {
+    WiFiClient client;  // Crear objeto WiFiClient
+    HTTPClient http;
+
+    // Formato de fecha y hora
+    String entryDate = getDate(); // Ajusta según sea necesario
+    String entryTime = getTime(); // Devuelve "HH:mm:ss"
+    
+    String fullUrl = url;  // La URL del servidor
+    http.begin(client, fullUrl);  // Iniciar conexión con WiFiClient y la URL
+
+    // Crear un objeto JSON
+    StaticJsonDocument<256> doc; // Cambia el tamaño si es necesario
+    doc["parkingSpaces"]["space_id"] = 1;
+    doc["parkingSpaces"]["lot_id"] = 1;
+    doc["parkingSpaces"]["space_number"] = 1;
+    doc["parkingSpaces"]["is_reserved"] = false;  // Cambiar a booleano
+    doc["parkingSpaces"]["is_occupied"] = false;   // Cambiar a booleano
+    doc["parkingHistory"]["client_id"] = 4;
+    doc["parkingHistory"]["lot_id"] = 1;
+    doc["parkingHistory"]["entry_time"] = HoraEntrada; // Guardada.
+    doc["parkingHistory"]["exit_time"] = entryDate + " " + entryTime; // Obtener tiempo en formato ISO
+    doc["parkingHistory"]["total_cost"] = 100;      // Ajusta el costo según corresponda
+
+    // Serializar el objeto JSON a String
+    String jsonPayload;
+    serializeJson(doc, jsonPayload);
+
+    Serial.println("Payload: " + jsonPayload);  // Imprimir el payload
+    http.addHeader("Content-Type", "application/json");  // Definir el header
+    int httpResponseCode = http.POST(jsonPayload);  // Enviar la solicitud POST con el JSON
+
+    if (httpResponseCode > 0) {
+      String response = http.getString();  // Obtener respuesta
+      Serial.println(httpResponseCode);  // Mostrar código de respuesta
+      Serial.println(response);  // Mostrar respuesta
+    } else {
+      Serial.print("Error en la petición POST: ");
+      Serial.println(httpResponseCode);
+    }
+    http.end();  // Cerrar la conexión
+  } else {
+    Serial.println("No conectado a WiFi, no se puede enviar la solicitud");
+  }
+}
+
+// Función para obtener la hora actual desde el servidor NTP
+String getTime() {
+  timeClient.update();
+  return timeClient.getFormattedTime(); // Asegúrate de que esto esté formateado correctamente
+}
+
+// Función para obtener la fecha actual en formato "YYYY-MM-DD"
+String getDate() {
+  time_t rawTime = timeClient.getEpochTime(); // Obtener tiempo en segundos desde la época
+  struct tm * timeInfo = localtime(&rawTime); // Convertir a estructura tm
+
+  // Formatear la fecha como "YYYY-MM-DD"
+  char buffer[11];
+  sprintf(buffer, "%04d-%02d-%02d", timeInfo->tm_year + 1900, timeInfo->tm_mon + 1, timeInfo->tm_mday);
+  return String(buffer);
 }
