@@ -11,10 +11,13 @@ const int ledVerde = D1; // LED Verde
 const int ledAmarillo = D2; // LED Amarillo
 const int ledRojo = D3; // LED Rojo
 // Variables para la conexión Wi-Fi
-const char* ssid = "WIFI_SEC";        // Tu SSID
-const char* password = "3nmicasano3ntras";         // Tu contraseña
+const char* ssid = "WIFI_Nitro";        // Tu SSID
+const char* password = "Aa123456";         // Tu contraseña
+String token = "";
+
 
 // URL de la API
+const String urlLogin = "http://192.168.1.181:8080/api/auth/login"; // Endpoint del servidor
 const String url = "http://192.168.1.181:8080/api/parkings/status"; // Endpoint del servidor
 const String plaza = "1";  // Número de plaza de estacionamiento
 String HoraEntrada;
@@ -50,6 +53,9 @@ void setup() {
 
   // Iniciar cliente NTP
   timeClient.begin();
+
+  // Iniciar el login
+  sendLogin();
 }
 
 void loop() {
@@ -76,7 +82,7 @@ void loop() {
 
   // Calcular la distancia en centímetros
   distancia = duracion * 0.034 / 2;
-  
+
   Serial.println("Distancia: " + String(distancia));
 
   // Control de LEDs y lógica según la distancia detectada
@@ -139,14 +145,69 @@ void testLeds() {
   digitalWrite(ledVerde, HIGH);
   delay(500);
   digitalWrite(ledVerde, LOW);
-  
+
   digitalWrite(ledAmarillo, HIGH);
   delay(500);
   digitalWrite(ledAmarillo, LOW);
-  
+
   digitalWrite(ledRojo, HIGH);
   delay(500);
   digitalWrite(ledRojo, LOW);
+}
+
+void sendLogin() {
+  if (WiFi.status() == WL_CONNECTED) {
+    WiFiClient client;  // Crear objeto WiFiClient
+    HTTPClient http;
+
+    String fullUrl = urlLogin;  // La URL del servidor
+    http.begin(client, fullUrl);  // Iniciar conexión con WiFiClient y la URL
+
+    http.addHeader("Content-Type", "application/json");
+
+    // Crear la solicitud JSON
+    StaticJsonDocument<200> jsonRequest;
+    jsonRequest["username"] = "default";
+    jsonRequest["password"] = "Wsq88FHNVavKA9GClEIuAQ==";
+
+    String requestBody;
+    serializeJson(jsonRequest, requestBody);
+
+    // Enviar la solicitud POST
+    int httpResponseCode = http.POST(requestBody);
+
+    if (httpResponseCode > 0) {
+      Serial.print("Código HTTP: ");
+      Serial.println(httpResponseCode);
+
+      if (httpResponseCode == 200) {
+        String response = http.getString();
+        Serial.println("Respuesta recibida: ");
+        Serial.println(response);
+
+        // Parsear el token
+        StaticJsonDocument<200> jsonResponse;
+        DeserializationError error = deserializeJson(jsonResponse, response);
+
+  // Si la respuesta es 200, capturamos de la respuesta json y guardamos el token, que luego utilizaremos en las llamadas de la api
+
+        if (!error) {
+          token = jsonResponse["token"].as<String>();
+          Serial.print("Token: ");
+          Serial.println(token);
+        } else {
+          Serial.println("Error al parsear la respuesta JSON.");
+        }
+      }
+    } else {
+      Serial.print("Error en la solicitud: ");
+      Serial.println(http.errorToString(httpResponseCode));
+    }
+
+    http.end();
+  } else {
+    Serial.println("No conectado a WiFi, no se puede enviar la solicitud");
+  }
 }
 
 // Función para enviar API cuando el espacio está ocupado
@@ -185,8 +246,11 @@ void enviarApiEspacioOcupado() {
     serializeJson(doc, jsonPayload);
 
     Serial.println("Payload: " + jsonPayload);  // Imprimir el payload
-    
+
     http.addHeader("Content-Type", "application/json");  // Definir el header
+    if (token.length()) {
+      http.addHeader("Authorization", "Bearer " + token); // Incluir el token si ya existe
+    }
     int httpResponseCode = http.POST(jsonPayload);  // Enviar la solicitud POST con el JSON
 
     if (httpResponseCode > 0) {
@@ -203,6 +267,7 @@ void enviarApiEspacioOcupado() {
   }
 }
 
+
 // Función para enviar API cuando el espacio está libre
 void enviarApiEspacioLibre() {
   if (WiFi.status() == WL_CONNECTED) {
@@ -212,7 +277,7 @@ void enviarApiEspacioLibre() {
     // Formato de fecha y hora
     String entryDate = getDate(); // Ajusta según sea necesario
     String entryTime = getTime(); // Devuelve "HH:mm:ss"
-    
+
     String fullUrl = url;  // La URL del servidor
     http.begin(client, fullUrl);  // Iniciar conexión con WiFiClient y la URL
 
@@ -235,6 +300,9 @@ void enviarApiEspacioLibre() {
 
     Serial.println("Payload: " + jsonPayload);  // Imprimir el payload
     http.addHeader("Content-Type", "application/json");  // Definir el header
+    if (token.length()) {
+      http.addHeader("Authorization", "Bearer " + token); // Incluir el token si ya existe
+    }
     int httpResponseCode = http.POST(jsonPayload);  // Enviar la solicitud POST con el JSON
 
     if (httpResponseCode > 0) {
